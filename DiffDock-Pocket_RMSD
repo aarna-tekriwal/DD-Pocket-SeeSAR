@@ -1,0 +1,108 @@
+import os
+import numpy as np
+from rdkit import Chem
+from rdkit import RDLogger
+
+
+RDLogger.DisableLog('rdApp.*')
+
+
+def load_mol_from_sdf(file_path):
+   if not os.path.exists(file_path):
+       raise FileNotFoundError(f"File not found: {file_path}")
+  
+   suppl = Chem.SDMolSupplier(file_path)
+   mol = next(suppl)
+   if mol is None:
+       raise ValueError(f"Could not load molecule from SDF file: {file_path}")
+   return mol
+
+
+def load_mol_from_mol2(file_path):
+   if not os.path.exists(file_path):
+       raise FileNotFoundError(f"File not found: {file_path}")
+  
+   mol = Chem.MolFromMol2File(file_path)
+   if mol is None:
+       raise ValueError(f"Could not load molecule from MOL2 file: {file_path}")
+   return mol
+
+
+def get_atoms_from_mol(mol, remove_hydrogens=True):
+   conf = mol.GetConformer()
+   atoms = np.array([conf.GetAtomPosition(i) for i in range(mol.GetNumAtoms())])
+   if remove_hydrogens:
+       heavy_atoms = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetAtomicNum() > 1]
+       atoms = atoms[heavy_atoms]
+   return atoms
+
+
+def compute_RMSD(atoms1, atoms2):
+   if len(atoms1) != len(atoms2):
+       raise ValueError(f"Atom sets must have the same number of atoms. atoms1: {len(atoms1)}, atoms2: {len(atoms2)}")
+   centroid1 = np.mean(atoms1, axis=0)
+   centroid2 = np.mean(atoms2, axis=0)
+   atoms1 -= centroid1
+   atoms2 -= centroid2
+   return np.sqrt(np.mean(np.sum((atoms1 - atoms2) ** 2, axis=1)))
+
+
+def get_atom_symbols(mol):
+   return [atom.GetSymbol() for atom in mol.GetAtoms()]
+
+
+def compare_atom_order(output_file, truth_file):
+   output_mol = load_mol_from_sdf(output_file)
+   truth_mol = load_mol_from_mol2(truth_file)
+  
+   output_atoms = get_atom_symbols(output_mol)
+   truth_atoms = get_atom_symbols(truth_mol)
+  
+   return output_atoms == truth_atoms
+
+
+def main():
+   path = '' #insert path
+   output_file = os.path.join(path, 'results.txt')
+  
+   with open(output_file, 'w') as f:
+       for file in os.listdir(path):
+           if file.endswith('_output.sdf'):
+               protein_name = file.replace('_output.sdf', '')
+               print(protein_name)
+               diffdock_output = os.path.join(path, f'{protein_name}_output.sdf')
+               ground_truth = os.path.join(path, f'{protein_name}_truth.mol2')
+
+
+               try:
+                   if not compare_atom_order(diffdock_output, ground_truth):
+                       raise ValueError(f"Atom orders in {protein_name}_output.sdf and {protein_name}_truth.mol2 do not match.")
+                  
+                   rank1_mol = load_mol_from_sdf(diffdock_output)
+                   ground_truth_mol = load_mol_from_mol2(ground_truth)
+
+
+                   atoms1 = get_atoms_from_mol(rank1_mol)
+                   atoms2 = get_atoms_from_mol(ground_truth_mol)
+
+
+                   if len(atoms1) != len(atoms2):
+                       f.write(f"Number of atoms in {protein_name}_output.sdf: {len(atoms1)}\n")
+                       f.write(f"Number of atoms in {protein_name}_truth.mol2: {len(atoms2)}\n")
+
+
+                   rmsd = compute_RMSD(atoms1, atoms2)
+
+
+                   f.write(f"RMSD for {protein_name}: {rmsd}\n")
+                   if rmsd < 2:
+                       f.write("Docking is considered successful.\n\n")
+                   else:
+                       f.write("Docking is not considered successful.\n\n")
+               except Exception as e:
+                   f.write(f"An error occurred for {protein_name}: {e}\n")
+               f.write("\n")
+
+
+if __name__ == "__main__":
+   main()
