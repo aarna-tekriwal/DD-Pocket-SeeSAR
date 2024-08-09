@@ -1,0 +1,160 @@
+import os
+import numpy as np
+from rdkit import Chem
+from rdkit import RDLogger
+import glob
+
+
+RDLogger.DisableLog('rdApp.*')
+
+
+def load_mol_from_sdf(file_path):
+   if not os.path.exists(file_path):
+       raise FileNotFoundError(f"File not found: {file_path}")
+  
+   suppl = Chem.SDMolSupplier(file_path)
+   mol = next(suppl)
+   if mol is None:
+       raise ValueError(f"Could not load molecule from SDF file: {file_path}")
+   return mol
+
+
+def load_mol_from_mol2(file_path):
+   if not os.path.exists(file_path):
+       raise FileNotFoundError(f"File not found: {file_path}")
+  
+   mol = Chem.MolFromMol2File(file_path)
+   if mol is None:
+       raise ValueError(f"Could not load molecule from MOL2 file: {file_path}")
+   return mol
+
+
+def remove_hydrogens(mol):
+   return Chem.RemoveHs(mol)
+
+
+def get_atoms_from_mol(mol):
+   conf = mol.GetConformer()
+   atoms = np.array([list(conf.GetAtomPosition(i)) for i in range(mol.GetNumAtoms())])
+   return atoms
+
+
+def compute_RMSD(atoms1, atoms2):
+   if len(atoms1) != len(atoms2):
+       raise ValueError(f"Atom sets must have the same number of atoms. atoms1: {len(atoms1)}, atoms2: {len(atoms2)}")
+   centroid1 = np.mean(atoms1, axis=0)
+   centroid2 = np.mean(atoms2, axis=0)
+   atoms1 -= centroid1
+   atoms2 -= centroid2
+   return np.sqrt(np.mean(np.sum((atoms1 - atoms2) ** 2, axis=1)))
+
+
+def get_atom_info(mol):
+   conf = mol.GetConformer()
+   return [(atom.GetSymbol(), atom.GetAtomicNum(), conf.GetAtomPosition(atom.GetIdx())) for atom in mol.GetAtoms()]
+
+
+def sort_atoms(atom_info):
+   return sorted(atom_info, key=lambda x: (x[1], x[2].x, x[2].y, x[2].z))
+
+
+def match_atom_order(mol, ref_mol):
+   ref_atom_info = get_atom_info(ref_mol)
+   ref_atoms_sorted = sort_atoms(ref_atom_info)
+
+
+   mol_atom_info = get_atom_info(mol)
+   mol_atoms_sorted = sort_atoms(mol_atom_info)
+   ref_to_mol_index_map = {ref_atom_info.index(atom): mol_atom_info.index(sorted_atom) for atom, sorted_atom in zip(ref_atoms_sorted, mol_atoms_sorted)}
+
+
+   new_order = [ref_to_mol_index_map[i] for i in range(len(ref_atom_info))]
+   mol = Chem.RenumberAtoms(mol, new_order)
+   return mol
+
+
+def compare_atom_order(output_file, truth_file):
+   output_mol = load_mol_from_sdf(output_file)
+   truth_mol = load_mol_from_mol2(truth_file)
+  
+   output_mol = remove_hydrogens(output_mol)
+   truth_mol = remove_hydrogens(truth_mol)
+  
+   output_mol = match_atom_order(output_mol, truth_mol)
+  
+   output_atoms = sort_atoms(get_atom_info(output_mol))
+   truth_atoms = sort_atoms(get_atom_info(truth_mol))
+  
+   output_symbols = [atom[0] for atom in output_atoms]
+   truth_symbols = [atom[0] for atom in truth_atoms]
+  
+   if output_symbols != truth_symbols:
+       print(f"Output atoms: {output_symbols}")
+       print(f"Truth atoms: {truth_symbols}")
+       return False
+   return True
+
+
+def main():
+   path = os.getcwd()
+   output_file = os.path.join(path, 'results.txt')
+  
+   with open(output_file, 'w') as f:
+       for file in os.listdir(path):
+           if file.endswith('.sdf'):
+               protein_name = file[:4]
+               print(protein_name)
+
+
+               files = glob.glob(f'*{protein_name}*.sdf')
+               file_to_open = files[0]
+
+
+               new_files = glob.glob(f'*{protein_name}*.mol2')
+               new_files_2 = new_files[0]
+
+
+               seesar_output = os.path.join(path, file_to_open)
+               ground_truth = os.path.join(path, new_files_2)
+
+
+               try:
+                   if not compare_atom_order(seesar_output, ground_truth):
+                       raise ValueError(f"Atom orders in {protein_name}_output.sdf and {protein_name}_truth.mol2 do not match.")
+                  
+                   rank1_mol = load_mol_from_sdf(seesar_output)
+                   ground_truth_mol = load_mol_from_mol2(ground_truth)
+
+
+                   rank1_mol = remove_hydrogens(rank1_mol)
+                   ground_truth_mol = remove_hydrogens(ground_truth_mol)
+
+
+                   atoms1 = sort_atoms(get_atom_info(rank1_mol))
+                   atoms2 = sort_atoms(get_atom_info(ground_truth_mol))
+
+
+                   atoms1_coords = np.array([atom[2] for atom in atoms1])
+                   atoms2_coords = np.array([atom[2] for atom in atoms2])
+
+
+                   if len(atoms1_coords) != len(atoms2_coords):
+                       f.write(f"Number of atoms in {protein_name}_output.sdf: {len(atoms1_coords)}\n")
+                       f.write(f"Number of atoms in {protein_name}_truth.mol2: {len(atoms2_coords)}\n")
+
+
+                   rmsd = compute_RMSD(atoms1_coords, atoms2_coords)
+
+
+                   f.write(f"RMSD for {protein_name}: {rmsd}\n")
+                   if rmsd < 2:
+                       f.write("Docking is considered successful.\n\n")
+                   else:
+                       f.write("Docking is not considered successful.\n\n")
+               except Exception as e:
+                   f.write(f"An error occurred for {protein_name}: {e}\n")
+               f.write("\n")
+
+
+if __name__ == "__main__":
+   main()
